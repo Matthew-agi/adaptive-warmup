@@ -56,6 +56,7 @@ warmup = AdaptiveWarmup(
     config=WarmupConfig(
         warmup_steps=1_000,
         measurement_interval=5,
+        batch_multiplier=2.0,  # WSD stable-phase batch / selected critical batch
         max_lr=3e-3,
         max_batch_size=512,
     ),
@@ -93,9 +94,14 @@ for step in range(max_steps):
             critical_batch_size=batch_estimate,
         )
         set_reference_lr(optimizer, recommendation.learning_rate)
-        rebuild_loader_if_needed(recommendation.batch_size)
 
     optimizer.step()
+
+    # Keep the measurement distribution fixed through warmup. Apply the
+    # measured, rounded, memory-clamped batch once for the WSD stable phase.
+    if step + 1 == warmup.config.warmup_steps:
+        handoff = warmup.complete_warmup(step + 1)
+        rebuild_loader_if_needed(handoff.batch_size)
 ```
 
 If CUDA runs out of memory, call
@@ -111,11 +117,14 @@ python examples/train_toy.py
 
 ## What the recommendations mean
 
-The batch recommendation targets the smallest batch whose mean modeled utility
-reaches `batch_target_utility` over a recent window of critical-batch samples.
-The default utility is 0.5, which selects the critical batch for a stable single
-sample. Set `batch_multiplier > 1` when step-time throughput matters more than
-sample efficiency.
+The batch target is the smallest batch whose mean modeled utility reaches
+`batch_target_utility` over a recent window of critical-batch samples. The
+default utility is 0.5. Measurements update this latent target but do not
+change the real batch during warmup, so every estimate observes the same noise
+distribution. Call `complete_warmup(...)` once at the handoff to stable
+training. For WSD, the default `batch_multiplier=2.0` applies a 2x post-warmup
+multiple to the selected critical batch before rounding and memory clamping;
+set the argument explicitly to change it.
 
 The LR estimate is local to the current parameters, gradients, optimizer state,
 and held-out batch. It is not a global convergence guarantee or an exact Hessian

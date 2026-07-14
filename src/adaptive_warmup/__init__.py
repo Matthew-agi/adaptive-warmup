@@ -30,4 +30,4 @@ __all__ = [
     "set_reference_lr",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
