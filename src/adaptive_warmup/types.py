@@ -23,6 +23,7 @@ class CriticalLREstimate:
     """Largest accepted reference LR along the next optimizer direction."""
 
     critical_lr: float
+    critical_sharpness: float
     reference_lr: float
     base_loss: float
     accepted_loss: float

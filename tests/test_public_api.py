@@ -6,6 +6,7 @@ def test_public_api_imports() -> None:
         OptimizerDirection,
         WarmupConfig,
         WarmupRecommendation,
+        critical_sharpness_from_lr,
         estimate_critical_learning_rate,
         estimate_gradient_noise,
         optimizer_step_direction,

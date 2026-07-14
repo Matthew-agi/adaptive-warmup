@@ -10,7 +10,7 @@ It combines two measurements:
   gradient noise-to-signal ratio and the largest statistically useful batch.
 - **Directional critical learning rate:** a held-out loss is evaluated along
   the upcoming optimizer direction to find the largest locally non-increasing
-  trial step.
+  trial step and its critical sharpness, `2 / critical_lr`.
 
 The controller filters those noisy measurements, forecasts the end-of-warmup
 learning-rate target, grows batch size toward a configurable utility point,
@@ -20,7 +20,7 @@ data loader, scheduler, or training loop.
 ## Install
 
 ```bash
-git clone <repository-url> adaptive-warmup
+git clone https://github.com/Matthew-agi/adaptive-warmup.git
 cd adaptive-warmup
 python -m pip install -e .
 ```
@@ -145,6 +145,11 @@ Important boundaries:
 - Probing costs two backward passes plus several no-grad held-out forwards, so
   use a cadence such as every 5–20 steps rather than every step.
 
+The LR search uses about six held-out forwards when the previous estimate is
+near the transition, with a default worst-case cap of nine. In distillation or
+other multi-model training, cache any frozen-teacher targets inside the held-out
+closure so each candidate only reruns the trainable model.
+
 See [the algorithm note](docs/algorithm.md) for equations, integration order,
 and assumptions.
 
@@ -152,8 +157,11 @@ and assumptions.
 
 The batch estimator follows the gradient-noise-scale motivation in
 [McCandlish et al., *An Empirical Model of Large-Batch Training*](https://arxiv.org/abs/1812.06162).
-The held-out directional probe is a deliberately simple local line search; for
-a probabilistic stochastic line-search treatment, see
-[Mahsereci and Hennig](https://www.jmlr.org/papers/v18/17-049.html).
+The critical-learning-rate and critical-sharpness probe follows
+[Kalra et al., *A Scalable Measure of Loss Landscape Curvature for Analyzing the
+Training Dynamics of LLMs*](https://arxiv.org/abs/2601.16979), building on the
+forward-only search in [Kalra and Barkeshli, *Why Warmup the Learning Rate?*
+](https://arxiv.org/abs/2406.09405). For a probabilistic stochastic line-search
+treatment, see [Mahsereci and Hennig](https://www.jmlr.org/papers/v18/17-049.html).
 
 MIT licensed.

@@ -41,13 +41,22 @@ On one fixed held-out batch it evaluates:
 L(learning_rate) = held_out_loss(parameters - learning_rate * d)
 ```
 
-Starting from the current or previous estimate, it doubles the trial LR until
-the loss becomes non-finite or exceeds the base loss by `loss_tolerance`. A
-binary search then returns the largest accepted LR. Parameter changes are
-reversed in a `finally` block and optimizer state is never changed.
+Starting from the current or previous estimate, five geometrically spaced
+trials bracket the transition across a configurable range (4096x by default).
+Three log-space refinements then return the largest accepted LR. A recent
+estimate near the transition therefore costs about six total held-out forwards,
+including the base-loss evaluation, and the default worst case is nine.
+Parameter changes are reversed in a `finally` block and optimizer state is
+never changed.
+
+The result also reports directional critical sharpness using the convention:
+
+```text
+critical_sharpness = 2 / critical_learning_rate
+```
 
 This is an empirical, local directional boundary. It should not be interpreted
-as the globally stable LR or an exact inverse sharpness measurement.
+as the globally stable LR or the full Hessian's maximum eigenvalue.
 
 ## 3. Warmup controller
 

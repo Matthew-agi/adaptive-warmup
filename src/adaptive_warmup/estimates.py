@@ -122,6 +122,15 @@ def _evaluate_loss(loss_closure: Callable[[], torch.Tensor | float]) -> float:
     return value
 
 
+def critical_sharpness_from_lr(critical_lr: float) -> float:
+    """Convert a critical LR to critical sharpness using ``lambda_c = 2 / eta_c``."""
+
+    value = float(critical_lr)
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError("critical_lr must be finite and positive.")
+    return 2.0 / value
+
+
 def estimate_critical_learning_rate(
     loss_closure: Callable[[], torch.Tensor | float],
     *,
@@ -133,7 +142,8 @@ def estimate_critical_learning_rate(
     max_lr: float | None = None,
     loss_tolerance: float = 1e-4,
     expansion_steps: int = 12,
-    binary_steps: int = 10,
+    binary_steps: int = 3,
+    bracket_steps: int = 5,
 ) -> CriticalLREstimate:
     """Find the largest held-out non-increasing trial LR along the next update.
 
@@ -158,8 +168,11 @@ def estimate_critical_learning_rate(
         raise ValueError("max_lr must be finite and positive when supplied.")
     if loss_tolerance < 0.0:
         raise ValueError("loss_tolerance must be non-negative.")
-    if expansion_steps <= 0 or binary_steps < 0:
-        raise ValueError("expansion_steps must be positive and binary_steps non-negative.")
+    if expansion_steps <= 0 or binary_steps < 0 or bracket_steps < 2:
+        raise ValueError(
+            "expansion_steps must be positive, binary_steps non-negative, and "
+            "bracket_steps at least 2."
+        )
 
     modes = _module_modes(model)
     if model is not None:
@@ -201,7 +214,15 @@ def estimate_critical_learning_rate(
             search_ceiling = float(max_lr)
             probe = min(probe, search_ceiling)
 
-        for _ in range(expansion_steps):
+        bracket_count = 1 if search_ceiling <= probe else int(bracket_steps)
+        growth = (
+            1.0
+            if bracket_count == 1
+            else (search_ceiling / probe) ** (1.0 / float(bracket_count - 1))
+        )
+        for bracket_index in range(bracket_count):
+            if bracket_index == bracket_count - 1:
+                probe = search_ceiling
             value = evaluate_at(probe)
             if (not math.isfinite(value)) or value > loss_limit:
                 high = probe
@@ -210,7 +231,7 @@ def estimate_critical_learning_rate(
             accepted_loss = value
             if probe >= search_ceiling:
                 break
-            probe = min(search_ceiling, probe * 2.0)
+            probe = min(search_ceiling, probe * growth)
 
         if high is None:
             critical_lr = low if low > 0.0 else probe
@@ -218,6 +239,7 @@ def estimate_critical_learning_rate(
                 accepted_loss = base_loss
             return CriticalLREstimate(
                 critical_lr=critical_lr,
+                critical_sharpness=critical_sharpness_from_lr(critical_lr),
                 reference_lr=reference_lr,
                 base_loss=base_loss,
                 accepted_loss=accepted_loss,
@@ -226,7 +248,7 @@ def estimate_critical_learning_rate(
             )
 
         for _ in range(binary_steps):
-            midpoint = 0.5 * (low + high)
+            midpoint = math.sqrt(low * high) if low > 0.0 else 0.5 * high
             value = evaluate_at(midpoint)
             if math.isfinite(value) and value <= loss_limit:
                 low = midpoint
@@ -235,8 +257,14 @@ def estimate_critical_learning_rate(
                 high = midpoint
         if not math.isfinite(accepted_loss):
             accepted_loss = base_loss
+        critical_lr = max(0.0, low)
+        if critical_lr <= 0.0:
+            raise FloatingPointError(
+                "The critical LR is below the probe's resolution; lower current_lr and retry."
+            )
         return CriticalLREstimate(
-            critical_lr=max(0.0, low),
+            critical_lr=critical_lr,
+            critical_sharpness=critical_sharpness_from_lr(critical_lr),
             reference_lr=reference_lr,
             base_loss=base_loss,
             accepted_loss=accepted_loss,
@@ -252,4 +280,8 @@ def estimate_critical_learning_rate(
             module.training = was_training
 
 
-__all__ = ["estimate_critical_learning_rate", "estimate_gradient_noise"]
+__all__ = [
+    "critical_sharpness_from_lr",
+    "estimate_critical_learning_rate",
+    "estimate_gradient_noise",
+]

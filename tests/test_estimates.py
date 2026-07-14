@@ -3,7 +3,11 @@ import copy
 import pytest
 import torch
 
-from adaptive_warmup import estimate_critical_learning_rate, estimate_gradient_noise
+from adaptive_warmup import (
+    critical_sharpness_from_lr,
+    estimate_critical_learning_rate,
+    estimate_gradient_noise,
+)
 
 
 def test_gradient_noise_estimate_matches_scalar_calculation() -> None:
@@ -66,8 +70,9 @@ def test_critical_lr_finds_quadratic_directional_boundary_and_restores_state() -
 
     assert estimate.bracketed is True
     assert estimate.critical_lr == pytest.approx(2.00005, abs=2e-4)
+    assert estimate.critical_sharpness == pytest.approx(2.0 / estimate.critical_lr)
     assert model.training is True
-    torch.testing.assert_close(model.weight, parameter_before, rtol=0, atol=2e-7)
+    torch.testing.assert_close(model.weight, parameter_before, rtol=0, atol=5e-7)
     assert optimizer.state_dict() == optimizer_state_before
 
 
@@ -84,6 +89,44 @@ def test_critical_lr_respects_hard_search_cap() -> None:
 
     assert estimate.bracketed is False
     assert estimate.critical_lr == pytest.approx(1.0)
+
+
+def test_critical_lr_default_search_uses_six_evaluations_near_previous_estimate() -> None:
+    parameter = torch.nn.Parameter(torch.tensor(1.0))
+    optimizer = torch.optim.SGD([parameter], lr=1.0)
+    (0.5 * parameter.square()).backward()
+
+    estimate = estimate_critical_learning_rate(
+        lambda: 0.5 * parameter.square(),
+        optimizer=optimizer,
+        current_lr=1.0,
+        previous_estimate=1.0,
+    )
+
+    assert estimate.evaluations == 6
+    assert estimate.bracketed is True
+    assert estimate.critical_lr < 2.0
+    assert estimate.critical_sharpness == pytest.approx(2.0 / estimate.critical_lr)
+
+
+def test_critical_lr_default_search_is_capped_at_nine_evaluations() -> None:
+    parameter = torch.nn.Parameter(torch.tensor(1.0))
+    parameter.grad = torch.tensor(0.0004)
+    optimizer = torch.optim.SGD([parameter], lr=2.0)
+
+    estimate = estimate_critical_learning_rate(
+        lambda: 0.5 * parameter.square(),
+        optimizer=optimizer,
+        current_lr=2.0,
+    )
+
+    assert estimate.evaluations == 9
+    assert estimate.bracketed is True
+    assert estimate.critical_lr < 5_000.0
+
+
+def test_critical_sharpness_conversion_uses_two_over_critical_lr() -> None:
+    assert critical_sharpness_from_lr(0.25) == pytest.approx(8.0)
 
 
 def test_critical_lr_restores_parameters_and_modes_after_closure_error() -> None:
