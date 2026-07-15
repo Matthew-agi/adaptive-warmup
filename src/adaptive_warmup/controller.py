@@ -26,6 +26,7 @@ class WarmupConfig:
     batch_target_utility: float = 0.5
     batch_multiplier: float = 2.0
     batch_round_to: int = 8
+    power_of_two_batches: bool = True
     max_lr: float | None = None
     max_batch_size: int | None = None
     oom_buffer_fraction: float = 0.10
@@ -118,6 +119,29 @@ def _round_batch_down(value: float, multiple: int) -> int:
         return 1
     rounded = int(math.floor(value / multiple)) * multiple
     return rounded if rounded > 0 else max(1, int(math.floor(value)))
+
+
+def _round_batch_up_power_of_two(value: float) -> int:
+    if not math.isfinite(value) or value <= 1.0:
+        return 1
+    exponent = math.log2(value)
+    nearest = round(exponent)
+    if math.isclose(exponent, nearest, rel_tol=0.0, abs_tol=1e-12):
+        exponent = float(nearest)
+    return 1 << int(math.ceil(exponent))
+
+
+def _round_batch_down_power_of_two(value: float) -> int:
+    if not math.isfinite(value) or value <= 1.0:
+        return 1
+    return 1 << int(math.floor(math.log2(value)))
+
+
+def _bounded_power_of_two(value: float, cap: int | None) -> int:
+    goal = _round_batch_up_power_of_two(value)
+    if cap is not None and goal > cap:
+        goal = _round_batch_down_power_of_two(float(cap))
+    return max(1, goal)
 
 
 def _clamp_sample(value: float, center: float | None, factor: float) -> float:
@@ -279,14 +303,19 @@ class AdaptiveWarmup:
         )
         if self.selected_critical_batch is None:
             return
-        goal = _round_batch_down(
-            self.selected_critical_batch * self.config.batch_multiplier,
-            self.config.batch_round_to,
-        )
-        if self.batch_size_cap is not None:
-            goal = min(goal, self.batch_size_cap)
-        if self.config.max_batch_size is not None:
-            goal = min(goal, self.config.max_batch_size)
+        raw_goal = self.selected_critical_batch * self.config.batch_multiplier
+        caps = [
+            cap
+            for cap in (self.batch_size_cap, self.config.max_batch_size)
+            if cap is not None
+        ]
+        cap = min(caps) if caps else None
+        if self.config.power_of_two_batches:
+            goal = _bounded_power_of_two(raw_goal, cap)
+        else:
+            goal = _round_batch_down(raw_goal, self.config.batch_round_to)
+            if cap is not None:
+                goal = min(goal, cap)
         # The critical batch is estimated during warmup, but changing the real
         # batch would change the noise distribution being measured.  Keep the
         # loader batch fixed and apply this goal once at the warmup handoff.
@@ -306,10 +335,16 @@ class AdaptiveWarmup:
         if not self.batch_handoff_applied:
             if self.batch_size_goal is not None:
                 goal = int(self.batch_size_goal)
-                if self.batch_size_cap is not None:
-                    goal = min(goal, self.batch_size_cap)
-                if self.config.max_batch_size is not None:
-                    goal = min(goal, self.config.max_batch_size)
+                caps = [
+                    cap
+                    for cap in (self.batch_size_cap, self.config.max_batch_size)
+                    if cap is not None
+                ]
+                cap = min(caps) if caps else None
+                if self.config.power_of_two_batches:
+                    goal = _bounded_power_of_two(float(goal), cap)
+                elif cap is not None:
+                    goal = min(goal, cap)
                 self.last_safe_batch_size = self.current_batch_size
                 self.current_batch_size = max(1, goal)
             self.batch_handoff_applied = True
@@ -364,7 +399,10 @@ class AdaptiveWarmup:
         if failed_batch_size <= 0:
             raise ValueError("failed_batch_size must be positive.")
         target = max(1, int(math.floor(failed_batch_size * (1.0 - self.config.oom_buffer_fraction))))
-        target = _round_batch_down(float(target), self.config.batch_round_to)
+        if self.config.power_of_two_batches:
+            target = _round_batch_down_power_of_two(float(target))
+        else:
+            target = _round_batch_down(float(target), self.config.batch_round_to)
         self.batch_size_cap = (
             target if self.batch_size_cap is None else min(self.batch_size_cap, target)
         )

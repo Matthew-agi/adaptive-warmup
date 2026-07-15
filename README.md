@@ -123,7 +123,9 @@ default utility is 0.5. Measurements update this latent target but do not
 change the real batch during warmup, so every estimate observes the same noise
 distribution. Call `complete_warmup(...)` once at the handoff to stable
 training. For WSD, the default `batch_multiplier=2.0` applies a 2x post-warmup
-multiple to the selected critical batch before rounding and memory clamping;
+multiple to the selected critical batch, rounds up to the next power of two,
+then clamps to the largest power of two within the memory ceiling;
+`power_of_two_batches=False` retains legacy multiple-based rounding;
 set the argument explicitly to change it.
 
 The LR estimate is local to the current parameters, gradients, optimizer state,

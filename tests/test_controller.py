@@ -67,10 +67,28 @@ def test_batch_handoff_multiplier_is_configurable() -> None:
 
     measured = controller.observe(step=4, critical_batch_size=64.0)
     assert measured.batch_size == 8
-    assert measured.batch_size_goal == 96
+    assert measured.batch_size_goal == 128
     with pytest.raises(ValueError, match="before warmup"):
         controller.complete_warmup(step=9)
-    assert controller.complete_warmup(step=10).batch_size == 96
+    assert controller.complete_warmup(step=10).batch_size == 128
+
+
+def test_fractional_wsd_goal_rounds_up_to_next_power_of_two() -> None:
+    controller = AdaptiveWarmup(
+        initial_lr=1e-4,
+        initial_batch_size=8,
+        config=WarmupConfig(
+            warmup_steps=10,
+            measurement_interval=5,
+            batch_multiplier=2.0,
+        ),
+    )
+
+    measured = controller.observe(step=4, critical_batch_size=3.739)
+
+    assert measured.batch_size == 8
+    assert measured.batch_size_goal == 8
+    assert controller.complete_warmup(step=10).batch_size == 8
 
 
 def test_oom_report_creates_persistent_rounded_cap() -> None:
@@ -82,11 +100,11 @@ def test_oom_report_creates_persistent_rounded_cap() -> None:
 
     recommendation = controller.report_oom(step=3, failed_batch_size=64)
 
-    assert recommendation.batch_size == 56
-    assert recommendation.batch_size_cap == 56
+    assert recommendation.batch_size == 32
+    assert recommendation.batch_size_cap == 32
     controller.observe(step=4, critical_batch_size=1_000.0)
-    assert controller.current_batch_size == 56
-    assert controller.recommendation(step=4).batch_size_goal == 56
+    assert controller.current_batch_size == 32
+    assert controller.recommendation(step=4).batch_size_goal == 32
 
 
 def test_controller_state_round_trip_is_json_serializable() -> None:
