@@ -13,6 +13,14 @@ from .directions import OptimizerDirection, optimizer_step_direction
 from .types import CriticalLREstimate, GradientNoiseEstimate
 
 
+class AdaptiveProbeError(FloatingPointError):
+    """A recoverable numerical failure from an adaptive measurement probe."""
+
+
+class ProbeResolutionError(AdaptiveProbeError):
+    """The transition lies below the learning-rate probe's resolution."""
+
+
 def _scalar_loss(value: torch.Tensor, *, name: str) -> torch.Tensor:
     if not torch.is_tensor(value) or value.numel() != 1:
         raise TypeError(f"{name} must return one scalar torch.Tensor.")
@@ -87,7 +95,7 @@ def estimate_gradient_noise(
         max_elements=max_elements,
     )
     if not torch.isfinite(vector_a).all() or not torch.isfinite(vector_b).all():
-        raise FloatingPointError("The gradient probe produced a non-finite value.")
+        raise AdaptiveProbeError("The gradient probe produced a non-finite value.")
 
     difference = vector_a - vector_b
     mean = 0.5 * (vector_a + vector_b)
@@ -97,7 +105,7 @@ def estimate_gradient_noise(
     critical_batch = float(batch_size) * ratio
     mean_loss = 0.5 * (float(loss_a.detach()) + float(loss_b.detach()))
     if not all(math.isfinite(value) for value in (noise, signal, ratio, critical_batch, mean_loss)):
-        raise FloatingPointError("The gradient-noise estimate was non-finite.")
+        raise AdaptiveProbeError("The gradient-noise estimate was non-finite.")
     return GradientNoiseEstimate(
         critical_batch_size=critical_batch,
         noise=noise,
@@ -184,7 +192,7 @@ def estimate_critical_learning_rate(
         base_loss = _evaluate_loss(loss_closure)
         evaluations += 1
         if not math.isfinite(base_loss):
-            raise FloatingPointError("The base held-out loss is non-finite.")
+            raise AdaptiveProbeError("The base held-out loss is non-finite.")
         loss_limit = base_loss + float(loss_tolerance) * max(abs(base_loss), 1e-12)
 
         def set_virtual_lr(target_lr: float) -> None:
@@ -259,7 +267,7 @@ def estimate_critical_learning_rate(
             accepted_loss = base_loss
         critical_lr = max(0.0, low)
         if critical_lr <= 0.0:
-            raise FloatingPointError(
+            raise ProbeResolutionError(
                 "The critical LR is below the probe's resolution; lower current_lr and retry."
             )
         return CriticalLREstimate(
@@ -281,6 +289,8 @@ def estimate_critical_learning_rate(
 
 
 __all__ = [
+    "AdaptiveProbeError",
+    "ProbeResolutionError",
     "critical_sharpness_from_lr",
     "estimate_critical_learning_rate",
     "estimate_gradient_noise",

@@ -4,10 +4,29 @@ import pytest
 import torch
 
 from adaptive_warmup import (
+    ProbeResolutionError,
     critical_sharpness_from_lr,
     estimate_critical_learning_rate,
     estimate_gradient_noise,
 )
+
+
+def test_below_resolution_critical_lr_is_a_recoverable_probe_error() -> None:
+    parameter = torch.nn.Parameter(torch.tensor(1.0))
+    optimizer = torch.optim.SGD([parameter], lr=1.0)
+    parameter.grad = torch.tensor(-1.0)
+
+    with pytest.raises(ProbeResolutionError, match="below the probe's resolution"):
+        estimate_critical_learning_rate(
+            lambda: parameter.square(),
+            optimizer=optimizer,
+            current_lr=1.0,
+            max_lr=1.0,
+            bracket_steps=2,
+            binary_steps=1,
+        )
+
+    torch.testing.assert_close(parameter, torch.tensor(1.0))
 
 
 def test_gradient_noise_estimate_matches_scalar_calculation() -> None:

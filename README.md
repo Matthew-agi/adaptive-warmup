@@ -153,6 +153,10 @@ Important boundaries:
   rank and broadcast the recommendation at an explicit synchronization point.
 - Probing costs two backward passes plus several no-grad held-out forwards, so
   use a cadence such as every 5–20 steps rather than every step.
+- Treat `AdaptiveProbeError` as a skipped measurement, not a failed training
+  step. It reports recoverable numerical conditions such as a critical-LR
+  transition below the current search resolution; preserve the real gradients
+  and continue with the controller's previous recommendation.
 
 The LR search uses about six held-out forwards when the previous estimate is
 near the transition, with a default worst-case cap of nine. In distillation or

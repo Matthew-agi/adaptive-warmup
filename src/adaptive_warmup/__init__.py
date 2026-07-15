@@ -8,6 +8,8 @@ from .controller import (
 )
 from .directions import OptimizerDirection, optimizer_step_direction, set_reference_lr
 from .estimates import (
+    AdaptiveProbeError,
+    ProbeResolutionError,
     critical_sharpness_from_lr,
     estimate_critical_learning_rate,
     estimate_gradient_noise,
@@ -15,10 +17,12 @@ from .estimates import (
 from .types import CriticalLREstimate, GradientNoiseEstimate, WarmupRecommendation
 
 __all__ = [
+    "AdaptiveProbeError",
     "AdaptiveWarmup",
     "CriticalLREstimate",
     "GradientNoiseEstimate",
     "OptimizerDirection",
+    "ProbeResolutionError",
     "WarmupConfig",
     "WarmupRecommendation",
     "critical_sharpness_from_lr",
@@ -30,4 +34,4 @@ __all__ = [
     "set_reference_lr",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
