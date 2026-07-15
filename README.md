@@ -56,6 +56,7 @@ warmup = AdaptiveWarmup(
     config=WarmupConfig(
         warmup_steps=1_000,
         measurement_interval=5,
+        batch_multiplier=2.0,  # WSD stable-phase batch / selected critical batch
         max_lr=3e-3,
         max_batch_size=512,
     ),
@@ -93,9 +94,14 @@ for step in range(max_steps):
             critical_batch_size=batch_estimate,
         )
         set_reference_lr(optimizer, recommendation.learning_rate)
-        rebuild_loader_if_needed(recommendation.batch_size)
 
     optimizer.step()
+
+    # Keep the measurement distribution fixed through warmup. Apply the
+    # measured, rounded, memory-clamped batch once for the WSD stable phase.
+    if step + 1 == warmup.config.warmup_steps:
+        handoff = warmup.complete_warmup(step + 1)
+        rebuild_loader_if_needed(handoff.batch_size)
 ```
 
 If CUDA runs out of memory, call
@@ -111,11 +117,16 @@ python examples/train_toy.py
 
 ## What the recommendations mean
 
-The batch recommendation targets the smallest batch whose mean modeled utility
-reaches `batch_target_utility` over a recent window of critical-batch samples.
-The default utility is 0.5, which selects the critical batch for a stable single
-sample. Set `batch_multiplier > 1` when step-time throughput matters more than
-sample efficiency.
+The batch target is the smallest batch whose mean modeled utility reaches
+`batch_target_utility` over a recent window of critical-batch samples. The
+default utility is 0.5. Measurements update this latent target but do not
+change the real batch during warmup, so every estimate observes the same noise
+distribution. Call `complete_warmup(...)` once at the handoff to stable
+training. For WSD, the default `batch_multiplier=2.0` applies a 2x post-warmup
+multiple to the selected critical batch, rounds up to the next power of two,
+then clamps to the largest power of two within the memory ceiling;
+`power_of_two_batches=False` retains legacy multiple-based rounding;
+set the argument explicitly to change it.
 
 The LR estimate is local to the current parameters, gradients, optimizer state,
 and held-out batch. It is not a global convergence guarantee or an exact Hessian
@@ -144,6 +155,10 @@ Important boundaries:
   rank and broadcast the recommendation at an explicit synchronization point.
 - Probing costs two backward passes plus several no-grad held-out forwards, so
   use a cadence such as every 5–20 steps rather than every step.
+- Treat `AdaptiveProbeError` as a skipped measurement, not a failed training
+  step. It reports recoverable numerical conditions such as a critical-LR
+  transition below the current search resolution; preserve the real gradients
+  and continue with the controller's previous recommendation.
 
 The LR search uses about six held-out forwards when the previous estimate is
 near the transition, with a default worst-case cap of nine. In distillation or

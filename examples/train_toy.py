@@ -85,6 +85,12 @@ def main() -> None:
             )
 
         optimizer.step()
+        if step + 1 == warmup.config.warmup_steps:
+            handoff = warmup.complete_warmup(step + 1)
+            print(
+                f"step={step + 1:02d} phase=handoff  "
+                f"batch={handoff.batch_size:3d} goal={handoff.batch_size_goal}"
+            )
 
     final_loss = float(loss_for((features, targets)).detach())
     print(f"final_loss={final_loss:.6f}")

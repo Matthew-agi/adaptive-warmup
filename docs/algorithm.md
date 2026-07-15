@@ -25,7 +25,8 @@ mean_i b / (b + Bcrit_i)
 ```
 
 Binary search selects the smallest `b` meeting the configured utility target.
-The result is multiplied, rounded down, capped by user and OOM limits, and only
+The result is multiplied, rounded up to a power of two, capped by user and OOM
+limits while remaining a power of two, and only
 allowed to grow during normal warmup.
 
 ## 2. Directional learning-rate estimate

@@ -44,3 +44,4 @@ class WarmupRecommendation:
     critical_lr_sample: float | None
     critical_batch_sample: float | None
     batch_size_cap: int | None
+    batch_size_goal: int | None = None

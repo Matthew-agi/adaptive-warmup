@@ -24,8 +24,9 @@ class WarmupConfig:
     batch_outlier_factor: float = 4.0
     batch_window: int = 9
     batch_target_utility: float = 0.5
-    batch_multiplier: float = 1.0
+    batch_multiplier: float = 2.0
     batch_round_to: int = 8
+    power_of_two_batches: bool = True
     max_lr: float | None = None
     max_batch_size: int | None = None
     oom_buffer_fraction: float = 0.10
@@ -120,6 +121,29 @@ def _round_batch_down(value: float, multiple: int) -> int:
     return rounded if rounded > 0 else max(1, int(math.floor(value)))
 
 
+def _round_batch_up_power_of_two(value: float) -> int:
+    if not math.isfinite(value) or value <= 1.0:
+        return 1
+    exponent = math.log2(value)
+    nearest = round(exponent)
+    if math.isclose(exponent, nearest, rel_tol=0.0, abs_tol=1e-12):
+        exponent = float(nearest)
+    return 1 << int(math.ceil(exponent))
+
+
+def _round_batch_down_power_of_two(value: float) -> int:
+    if not math.isfinite(value) or value <= 1.0:
+        return 1
+    return 1 << int(math.floor(math.log2(value)))
+
+
+def _bounded_power_of_two(value: float, cap: int | None) -> int:
+    goal = _round_batch_up_power_of_two(value)
+    if cap is not None and goal > cap:
+        goal = _round_batch_down_power_of_two(float(cap))
+    return max(1, goal)
+
+
 def _clamp_sample(value: float, center: float | None, factor: float) -> float:
     if center is None or not math.isfinite(center) or center <= 0.0 or factor <= 1.0:
         return value
@@ -160,9 +184,11 @@ class AdaptiveWarmup:
         self.recent_lr_points: list[tuple[int, float]] = []
         self.batch_ema: float | None = None
         self.selected_critical_batch: float | None = None
+        self.batch_size_goal: int | None = None
         self.recent_critical_batches: list[float] = []
         self.batch_size_cap: int | None = self.config.max_batch_size
         self.last_safe_batch_size = int(initial_batch_size)
+        self.batch_handoff_applied = False
         self.last_step = -1
 
     @property
@@ -200,6 +226,7 @@ class AdaptiveWarmup:
             critical_lr_sample=lr_sample,
             critical_batch_sample=batch_sample,
             batch_size_cap=self.batch_size_cap,
+            batch_size_goal=self.batch_size_goal,
         )
 
     def recommendation(self, step: int) -> WarmupRecommendation:
@@ -276,17 +303,53 @@ class AdaptiveWarmup:
         )
         if self.selected_critical_batch is None:
             return
-        goal = _round_batch_down(
-            self.selected_critical_batch * self.config.batch_multiplier,
-            self.config.batch_round_to,
-        )
-        if self.batch_size_cap is not None:
-            goal = min(goal, self.batch_size_cap)
-        if self.config.max_batch_size is not None:
-            goal = min(goal, self.config.max_batch_size)
-        if goal > self.current_batch_size:
-            self.last_safe_batch_size = self.current_batch_size
-            self.current_batch_size = goal
+        raw_goal = self.selected_critical_batch * self.config.batch_multiplier
+        caps = [
+            cap
+            for cap in (self.batch_size_cap, self.config.max_batch_size)
+            if cap is not None
+        ]
+        cap = min(caps) if caps else None
+        if self.config.power_of_two_batches:
+            goal = _bounded_power_of_two(raw_goal, cap)
+        else:
+            goal = _round_batch_down(raw_goal, self.config.batch_round_to)
+            if cap is not None:
+                goal = min(goal, cap)
+        # The critical batch is estimated during warmup, but changing the real
+        # batch would change the noise distribution being measured.  Keep the
+        # loader batch fixed and apply this goal once at the warmup handoff.
+        self.batch_size_goal = int(goal)
+
+    def complete_warmup(self, step: int) -> WarmupRecommendation:
+        """Apply the measured post-warmup batch exactly once.
+
+        Warmup uses one stable measurement batch.  At the first stable-training
+        step, the selected critical batch is multiplied by ``batch_multiplier``
+        (2x by default for WSD), rounded, and clamped to the hardware ceiling.
+        OOM backoff remains allowed during warmup because it is a safety action.
+        """
+
+        if step < self.config.warmup_steps:
+            raise ValueError("Batch handoff cannot occur before warmup is complete.")
+        if not self.batch_handoff_applied:
+            if self.batch_size_goal is not None:
+                goal = int(self.batch_size_goal)
+                caps = [
+                    cap
+                    for cap in (self.batch_size_cap, self.config.max_batch_size)
+                    if cap is not None
+                ]
+                cap = min(caps) if caps else None
+                if self.config.power_of_two_batches:
+                    goal = _bounded_power_of_two(float(goal), cap)
+                elif cap is not None:
+                    goal = min(goal, cap)
+                self.last_safe_batch_size = self.current_batch_size
+                self.current_batch_size = max(1, goal)
+            self.batch_handoff_applied = True
+        self.last_step = max(self.last_step, int(step))
+        return self._recommendation(step)
 
     def observe(
         self,
@@ -336,7 +399,10 @@ class AdaptiveWarmup:
         if failed_batch_size <= 0:
             raise ValueError("failed_batch_size must be positive.")
         target = max(1, int(math.floor(failed_batch_size * (1.0 - self.config.oom_buffer_fraction))))
-        target = _round_batch_down(float(target), self.config.batch_round_to)
+        if self.config.power_of_two_batches:
+            target = _round_batch_down_power_of_two(float(target))
+        else:
+            target = _round_batch_down(float(target), self.config.batch_round_to)
         self.batch_size_cap = (
             target if self.batch_size_cap is None else min(self.batch_size_cap, target)
         )
@@ -359,9 +425,11 @@ class AdaptiveWarmup:
             "recent_lr_points": [list(point) for point in self.recent_lr_points],
             "batch_ema": self.batch_ema,
             "selected_critical_batch": self.selected_critical_batch,
+            "batch_size_goal": self.batch_size_goal,
             "recent_critical_batches": list(self.recent_critical_batches),
             "batch_size_cap": self.batch_size_cap,
             "last_safe_batch_size": self.last_safe_batch_size,
+            "batch_handoff_applied": self.batch_handoff_applied,
             "last_step": self.last_step,
         }
 
@@ -391,6 +459,9 @@ class AdaptiveWarmup:
             if state.get("selected_critical_batch") is None
             else float(state["selected_critical_batch"])
         )
+        self.batch_size_goal = (
+            None if state.get("batch_size_goal") is None else int(state["batch_size_goal"])
+        )
         self.recent_critical_batches = [
             float(value) for value in state.get("recent_critical_batches", [])
         ]
@@ -398,6 +469,7 @@ class AdaptiveWarmup:
             None if state.get("batch_size_cap") is None else int(state["batch_size_cap"])
         )
         self.last_safe_batch_size = int(state["last_safe_batch_size"])
+        self.batch_handoff_applied = bool(state.get("batch_handoff_applied", False))
         self.last_step = int(state["last_step"])
 
 
